@@ -1,0 +1,35 @@
+[BadRequest]
+other = "Ogiltigt anrop"
+
+[AccessDenied]
+other = "Åtkomst nekad"
+
+[UserName]
+other = "Namn"
+
+[UserEmail]
+other = "E-post"
+
+[Units]
+other = "Grupper"
+
+[Password]
+other = "Lösenord"
+
+[PasswordHelp]
+other = "Använd det delade lösenordet för att logga in."
+
+[LogIn]
+other = "Logga in"
+
+[UserNameRequired]
+other = "Namn är obligatoriskt"
+
+[UserEmailRequired]
+other = "E-post är obligatoriskt"
+
+[PasswordRequired]
+other = "Lösenordet är obligatoriskt"
+
+[InvalidPassword]
+other = "Ogiltigt lösenord"

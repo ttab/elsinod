@@ -1,0 +1,11 @@
+{{template "header" .}}
+<div>
+  <h3 class="text-lg font-medium">{{tl .Title}}</h3>
+  <p class="text-foreground text-sm">
+    {{tl .Contents.Message}}
+  </p>
+  <p class="text-muted-foreground text-sm">
+    {{.Contents.Error.Error}}
+  </p>
+</div>
+{{template "footer" .}}

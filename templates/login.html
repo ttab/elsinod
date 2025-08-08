@@ -1,0 +1,89 @@
+{{template "raw_header" .}}
+{{$c := .Contents}}
+<body class="bg-background font-geist-sans text-foreground antialiased">
+  <div
+    class="flex min-h-svh items-center justify-center p-4 md:bg-muted md:p-10">
+    <div class="w-full max-w-md">
+      <div class="mb-6 flex justify-center">
+        <a href="#">
+          <img
+            src="/assets/logo.svg"
+            alt="TT AB"
+            width="120"
+            data-uk-svg />
+        </a>
+      </div>
+      <div class="fr-widget border-border bg-background text-foreground md:border md:p-6">
+        <div class="flex flex-col space-y-1.5">
+          <h1 class="uk-h4">{{t "LogIn" "Log in"}}</h1>
+        </div>
+        <form class="uk-form-stacked space-y-4 mt-6 space-y-6" method="POST">
+          {{if $c.Error }}
+          <div class="uk-alert uk-alert-destructive" data-uk-alert>
+            <p>{{tl $c.Error.Label}}</p>
+          </div>
+          {{end}}
+          <div>
+            <label class="uk-form-label uk-form-label-required" for="user-name">
+              {{t "UserName" "User name"}}
+            </label>
+            <div class="uk-form-controls">
+              <input
+                class="uk-input"
+                name="user-name"
+                type="text"
+                value="{{$c.DefaultUserName}}"
+                />
+            </div>
+          </div>
+          <div>
+            <label class="uk-form-label uk-form-label-required" for="user-email">
+              {{t "UserEmail" "User email"}}
+            </label>
+            <div class="uk-form-controls">
+              <input
+                class="uk-input"
+                name="user-email"
+                type="text"
+                value="{{$c.DefaultUserEmail}}"
+                />
+            </div>
+          </div>
+          <div>
+            <label class="uk-form-label uk-form-label-required" for="password">
+              {{t "Password"}}
+            </label>
+            <div class="uk-form-controls">
+              <input
+                class="uk-input"
+                name="password"
+                type="password"
+                />
+            </div>
+            <div class="uk-form-help" id="slug-help-block">
+              {{t "PasswordHelp" "Use the shared password to log in."}}
+            </div>
+          </div>
+          <div class="flex flex-col space-y-1.5">
+            <h2 class="uk-h5">{{t "Units"}}</h2>
+          </div>
+          <div class="uk-form-controls">
+            {{range $c.Units}}
+            <label class="uk-form-label">
+              <input type="checkbox"
+                     name="unit_{{.Name}}"
+                     value="{{.Name}}"
+                     {{if .Selected}}checked{{end -}}
+                     /> <span class="select-none">{{tl .Label}}</span>
+            </label>
+            {{end}}
+          </div>
+          <button class="uk-btn uk-btn-default w-full">
+            {{t "LogIn" "Log in"}}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</body>
+{{template "raw_footer" .}}

@@ -1,0 +1,80 @@
+{{define "raw_header" -}}
+<!DOCTYPE html>
+<html lang="{{lang}}">
+  <head>
+    <meta charset="utf-8">
+    <link rel="icon" href="/assets/favicon-white.ico" type="image/x-icon">
+    <link rel="icon" href="/assets/favicon-black.ico" type="image/x-icon" media="(prefers-color-scheme: light)">
+    <link rel="icon" href="/assets/favicon-white.ico" type="image/x-icon" media="(prefers-color-scheme: dark)">
+    <title>{{tl .Title}}</title>
+    <link rel="stylesheet" href="/assets/css/franken-ui-core.2.1.0.css" />
+    <link rel="stylesheet" href="/assets/css/franken-ui-utilities.2.1.0.css" />
+    <link rel="stylesheet" href="/assets/css/theme.css" />
+    <link rel="stylesheet" href="/assets/css/tailwind.css" />
+    <script src="/assets/js/franken-ui-core.2.1.0.iife.js" type="module"></script>
+    <script src="/assets/js/franken-ui-icon.2.1.0.iife.js" type="module"></script>
+  </head>
+{{end}}
+
+{{define "raw_footer" -}}
+</html>
+{{end}}
+
+{{define "header" -}}
+{{template "raw_header" .}}
+<body>
+  <div class="p-6 lg:p-10">
+    <div class="flex">
+      <div class="flex-1 space-y-0.5">
+        <h2 class="text-2xl font-bold tracking-tight">{{t "Elsinod"}}</h2>
+      </div>
+      <div class="flex flex-none flex-justify-end">
+        {{ if eq "en" lang }}
+        <a class="uk-btn uk-btn-default" href="/set-language?lang=sv&redirect={{page_url}}">
+          🇸🇪
+        </a>
+        {{else}}
+        <a class="uk-btn uk-btn-default" href="/set-language?lang=en&redirect={{page_url}}">
+          🇬🇧
+        </a>
+        {{end}}
+      </div>
+    </div>
+    <div class="border-border my-6 border-t"></div>
+    <div class="flex gap-x-12">
+      <aside class="w-1/6">
+        <ul
+          class="uk-nav uk-nav-secondary"
+          hx-boost="true" hx-push-url="true"
+          uk-switcher="connect: #component-nav; animation: uk-anmt-slide-left-sm"
+          >
+          {{range .Menu}}
+          <li {{if .Active }}class="uk-active"{{end}}><a href="{{.HREF}}">{{tl .Title}}</a></li>
+          {{end}}
+        </ul>
+      </aside>
+      <div class="flex-1">
+        <div class="space-y-6">
+          {{if .Breadcrumb}}
+          <nav aria-label="Breadcrumb">
+            <ul class="uk-breadcrumb">
+              {{range .Breadcrumb}}
+              {{if .HREF}}
+              <li><a href="{{.HREF}}">{{tl .Text}}</a></li>
+              {{else}}
+              <li><span aria-current="page">{{tl .Text}}</span></a></li>
+              {{end}}
+              {{end}}
+            </ul>
+          </nav>
+          {{end}}
+{{end}}
+
+{{define "footer"}}
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+{{template "raw_footer" .}}
+{{end}}

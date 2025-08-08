@@ -1,0 +1,7 @@
+.text-nowrap {
+  text-wrap: nowrap;
+}
+
+.select-none {
+    user-select: none;
+}
