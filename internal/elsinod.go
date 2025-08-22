@@ -25,7 +25,7 @@ import (
 	"github.com/viccon/sturdyc"
 )
 
-func init() {
+func init() { //nolint: gochecknoinits
 	// This is sooo ugly!
 	jwt.MarshalSingleStringAsArray = true
 }

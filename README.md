@@ -11,6 +11,17 @@ eval $(minikube docker-env)
 docker build . -t ghcr.io/ttab/elsinod:v0.0.0
 ```
 
+## ghcr.io credentials
+
+Create secret for pulling images from ghcr.io:
+
+``` shellsession
+kubectl create secret docker-registry ghcr-pull-secret --docker-server https://ghcr.io/ \
+    --docker-username hugowetterberg --docker-password $(pass ghcr.io)
+```
+
+`pass` is just a utility I use for storing credentials for command line use. Substitute with actual token or your password tool.
+
 ## DNS
 
 For local testing i configured ingress DNS by following this guide (all the way to step 4): https://minikube.sigs.k8s.io/docs/handbook/addons/ingress-dns/

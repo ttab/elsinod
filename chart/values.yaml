@@ -16,6 +16,9 @@ webName: elsinod
 repository: ghcr.io/ttab/elsinod
 replicas: 1
 
+imagePullSecrets:
+  - name: ghcr-pull-secret
+
 networkpolicy:
   create: true
   ingress:
