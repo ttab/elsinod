@@ -28,3 +28,4 @@ jobs:
           username: ${{ github.actor }}
           access-token: ${{ secrets.GITHUB_TOKEN }}
           chart-folder: chart
+          update-dependencies: true
