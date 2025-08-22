@@ -1,0 +1,10 @@
+apiVersion: v2
+name: elsinod
+description: Helper for running a single node environment
+type: application
+version: 0.1.0
+appVersion: "v0.0.0"
+dependencies:
+- name: elib
+  version: 0.1.2
+  repository: oci://ghcr.io/ttab/helm-elib

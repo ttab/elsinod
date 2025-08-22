@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels:
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: "minio/minio:{{ .Chart.AppVersion }}"
+          command:
+            - "/usr/bin/docker-entrypoint.sh"
+            - server
+            - /data
+            - --console-address
+            - :9001
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: api
+              containerPort: 9000
+              protocol: TCP
+            - name: console
+              containerPort: 9001
+              protocol: TCP
+          env:
+            - name: MINIO_ROOT_USER
+              value: {{ .Values.globals.minioUser | quote }}
+            - name: MINIO_ROOT_PASSWORD
+              value: {{ .Values.globals.minioPassword | quote }}
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data/
+
+      volumes:
+        - name: minio-data
+          emptyDir:
+            sizeLimit: 2Gi

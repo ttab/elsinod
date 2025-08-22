@@ -1,0 +1,6 @@
+apiVersion: v2
+name: minio
+description: S3 compatible service
+type: application
+version: 0.1.0
+appVersion: "RELEASE.2025-07-23T15-54-02Z"

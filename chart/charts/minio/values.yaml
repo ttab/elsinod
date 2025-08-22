@@ -1,0 +1,3 @@
+globals:
+  minioUser: minioadmin
+  minioPassword: minioadmin

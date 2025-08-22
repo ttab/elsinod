@@ -1,0 +1,23 @@
+globals:
+  baseDomain: demo.ecms.test
+  loginPassword: pass
+  clientPassword: pass
+  dbPassword: pass
+  albIngress: true
+  s3:
+    override: false
+    endpoint: http://minio:9000/
+    accessKey: minioadmin
+    accessKeySecret: minioadmin
+
+role: frontend
+webName: elsinod
+
+repository: ghcr.io/ttab/elsinod
+replicas: 1
+
+networkpolicy:
+  create: true
+  ingress:
+    - port: 1080
+    - port: 1081

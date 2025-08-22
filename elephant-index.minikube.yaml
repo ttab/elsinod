@@ -1,0 +1,20 @@
+globals:
+  albIngress: false
+
+withAffinities: false
+
+replicas: 1
+
+opensearch:
+  managed: false
+  endpoint: http://opensearch:9200
+  shardingPolicy: ":1:0"
+
+vaultSecrets:
+  create: false
+
+
+networkpolicy:
+  create: false
+
+mountCACert: true

@@ -8,51 +8,49 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/ttab/elephantine"
 	"github.com/ttab/elsinod/howdah"
+	"github.com/ttab/elsinod/postgres"
 	"github.com/viccon/sturdyc"
 )
 
+func init() {
+	// This is sooo ugly!
+	jwt.MarshalSingleStringAsArray = true
+}
+
 func NewElsinod(
 	ctx context.Context,
-	internalURL string,
+	db *pgx.Conn,
 	publicURL string,
 	clientSecret string,
 	demoPassword string,
+	organisation string,
 ) (*Elsinod, error) {
-	key, err := NewSigningKey()
-	if err != nil {
-		return nil, fmt.Errorf("create signing key: %w", err)
-	}
-
 	baseURL, err := url.Parse(publicURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid public URL: %w", err)
 	}
 
-	internalBaseURL, err := url.Parse(internalURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid internal URL: %w", err)
-	}
-
-	parser := elephantine.NewStaticAuthInfoParser(ctx, key.PublicKey, elephantine.JWTAuthInfoParserOptions{
-		Audience: "elephant",
-		Issuer:   publicURL,
-	})
+	issuerURL := baseURL.String()
 
 	conf := elephantine.OpenIDConnectConfig{
-		Issuer:                publicURL,
-		UserinfoEndpoint:      internalBaseURL.JoinPath("user-info").String(),
-		TokenEndpoint:         internalBaseURL.JoinPath("token").String(),
+		Issuer:                issuerURL,
+		UserinfoEndpoint:      baseURL.JoinPath("user-info").String(),
+		TokenEndpoint:         baseURL.JoinPath("token").String(),
 		AuthorizationEndpoint: baseURL.JoinPath("protocol", "openid-connect", "auth").String(),
-		JwksURI:               internalBaseURL.JoinPath(".well-known", "jwks.json").String(),
+		JwksURI:               baseURL.JoinPath(".well-known", "jwks.json").String(),
 		GrantTypesSupported: []string{
 			"authorization_code",
 			"refresh_token",
@@ -79,27 +77,41 @@ func NewElsinod(
 		sturdyc.WithEvictionInterval(time.Second),
 	)
 
-	return &Elsinod{
+	e := Elsinod{
+		issuerURL:    issuerURL,
 		publicURL:    publicURL,
-		keyID:        uuid.NewString(),
-		key:          key,
 		clientSecret: clientSecret,
 		demoPassword: demoPassword,
 		oidc:         conf,
 		codes:        codes,
-		authParser:   parser,
-	}, nil
+		org:          organisation,
+	}
+
+	err = e.ensureSigningKeys(ctx, db)
+	if err != nil {
+		return nil, fmt.Errorf("ensure signing keys: %w", err)
+	}
+
+	e.authParser = elephantine.NewJWTAuthInfoParser(ctx, e.keyFunc, elephantine.JWTAuthInfoParserOptions{
+		Audience: "elephant",
+		Issuer:   publicURL,
+	})
+
+	return &e, nil
 }
 
 type Elsinod struct {
+	km   sync.Mutex
+	keys []elsinodKey
+
+	issuerURL    string
 	publicURL    string
-	keyID        string
-	key          *ecdsa.PrivateKey
 	clientSecret string
 	demoPassword string
 	oidc         elephantine.OpenIDConnectConfig
 	codes        *sturdyc.Client[issuedCode]
 	authParser   elephantine.AuthInfoParser
+	org          string
 }
 
 type issuedCode struct {
@@ -120,14 +132,14 @@ func (e *Elsinod) RegisterRoutes(mux *howdah.PageMux) {
 	mux.HandleFunc("GET /protocol/openid-connect/auth", e.authPage)
 	mux.HandleFunc("POST /protocol/openid-connect/auth", e.authPage)
 	mux.HandleFunc("POST /", func(
-		ctx context.Context, w http.ResponseWriter, r *http.Request,
+		_ context.Context, _ http.ResponseWriter, r *http.Request,
 	) (*howdah.Page, error) {
-		println(r.URL.String())
+		slog.Warn("unknown route", "path", r.URL.Path)
 
 		return nil, errors.New("not implemented")
 	})
 	mux.HandleFunc("GET /protocol/openid-connect/logout", func(
-		ctx context.Context, w http.ResponseWriter, r *http.Request,
+		_ context.Context, w http.ResponseWriter, r *http.Request,
 	) (*howdah.Page, error) {
 		redirURL := r.FormValue("post_logout_redirect_uri")
 
@@ -138,7 +150,7 @@ func (e *Elsinod) RegisterRoutes(mux *howdah.PageMux) {
 }
 
 func (e *Elsinod) oidcConfig(
-	ctx context.Context, w http.ResponseWriter, r *http.Request,
+	_ context.Context, w http.ResponseWriter, _ *http.Request,
 ) (*howdah.Page, error) {
 	data, err := json.MarshalIndent(e.oidc, "", "  ")
 	if err != nil {
@@ -156,6 +168,104 @@ func (e *Elsinod) oidcConfig(
 	return nil, howdah.ErrSkipRender
 }
 
+func (e *Elsinod) keyFunc(t *jwt.Token) (any, error) {
+	for _, k := range e.keys {
+		if k.JWK.ID == t.Header["kid"] {
+			return k.Key, nil
+		}
+	}
+
+	return nil, errors.New("unknown signing key")
+}
+
+type StoredSigningKey struct {
+	Created time.Time
+	PEM     string
+}
+
+type elsinodKey struct {
+	Key *ecdsa.PrivateKey
+	JWK jwk
+}
+
+func (e *Elsinod) ensureSigningKeys(
+	ctx context.Context, db *pgx.Conn,
+) (outErr error) {
+	e.km.Lock()
+	defer e.km.Unlock()
+
+	var known []string
+
+	for _, k := range e.keys {
+		known = append(known, k.JWK.ID)
+	}
+
+	q := postgres.New(db)
+
+	keyList, err := q.GetSigningKeys(ctx, known)
+	if err != nil {
+		return fmt.Errorf("load signing keys: %w", err)
+	}
+
+	for _, row := range keyList {
+		var stored StoredSigningKey
+
+		err = json.Unmarshal(keyList[0].Data, &stored)
+		if err != nil {
+			return fmt.Errorf("unmarshal stored key: %w", err)
+		}
+
+		key, err := DecodePrivateKey(stored.PEM)
+		if err != nil {
+			return fmt.Errorf("decode key %q: %w", row.ID, err)
+		}
+
+		e.keys = append(e.keys, elsinodKey{
+			Key: key,
+			JWK: jwkFromEcdsa(row.ID, key),
+		})
+	}
+
+	if len(e.keys) > 0 {
+		return nil
+	}
+
+	key, err := NewSigningKey()
+	if err != nil {
+		return fmt.Errorf("create new signing key: %w", err)
+	}
+
+	pemEnc, err := EncodePrivateKey(key)
+	if err != nil {
+		return fmt.Errorf("encode new key: %w", err)
+	}
+
+	data, err := json.Marshal(StoredSigningKey{
+		Created: time.Now(),
+		PEM:     pemEnc,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal new key for storage: %w", err)
+	}
+
+	jwk := jwkFromEcdsa(uuid.NewString(), key)
+
+	err = q.AddSigningKey(ctx, postgres.AddSigningKeyParams{
+		ID:   jwk.ID,
+		Data: data,
+	})
+	if err != nil {
+		return fmt.Errorf("save new signing key: %w", err)
+	}
+
+	e.keys = append(e.keys, elsinodKey{
+		Key: key,
+		JWK: jwk,
+	})
+
+	return nil
+}
+
 type jwks struct {
 	Keys []jwk `json:"keys"`
 }
@@ -171,26 +281,16 @@ type jwk struct {
 }
 
 func (e *Elsinod) jwks(
-	ctx context.Context, w http.ResponseWriter, r *http.Request,
+	_ context.Context, w http.ResponseWriter, _ *http.Request,
 ) (*howdah.Page, error) {
-	l := uint(e.key.Curve.Params().BitSize / 8)
+	keys := make([]jwk, len(e.keys))
 
-	if e.key.Curve.Params().BitSize%8 != 0 {
-		l++
-	}
-
-	key := jwk{
-		ID:    e.keyID,
-		Type:  "EC",
-		Algo:  "ES384",
-		Use:   "sig",
-		Curve: "P-384",
-		X:     bigIntToBase64RawURL(e.key.X, l),
-		Y:     bigIntToBase64RawURL(e.key.Y, l),
+	for i := range e.keys {
+		keys[i] = e.keys[i].JWK
 	}
 
 	data, err := json.MarshalIndent(jwks{
-		Keys: []jwk{key},
+		Keys: keys,
 	}, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal keyset: %w", err)
@@ -205,6 +305,24 @@ func (e *Elsinod) jwks(
 	}
 
 	return nil, howdah.ErrSkipRender
+}
+
+func jwkFromEcdsa(id string, key *ecdsa.PrivateKey) jwk {
+	l := uint(key.Curve.Params().BitSize / 8) //nolint: gosec
+
+	if key.Curve.Params().BitSize%8 != 0 {
+		l++
+	}
+
+	return jwk{
+		ID:    id,
+		Type:  "EC",
+		Algo:  "ES384",
+		Use:   "sig",
+		Curve: "P-384",
+		X:     bigIntToBase64RawURL(key.X, l),
+		Y:     bigIntToBase64RawURL(key.Y, l),
+	}
 }
 
 func badRequest(format string, a ...any) error {
@@ -245,7 +363,7 @@ func (ie InPageError) Error() string {
 }
 
 func (e *Elsinod) authPage(
-	ctx context.Context, w http.ResponseWriter, r *http.Request,
+	_ context.Context, w http.ResponseWriter, r *http.Request,
 ) (*howdah.Page, error) {
 	values := r.URL.Query()
 
@@ -368,6 +486,14 @@ func (e *Elsinod) handleAuthSubmit(
 		}
 	}
 
+	var units []string
+
+	for k, v := range r.Form {
+		if strings.HasPrefix(k, "unit_") {
+			units = append(units, "/"+v[0])
+		}
+	}
+
 	values := redirectURI.Query()
 
 	code := uuid.NewString()
@@ -392,6 +518,7 @@ func (e *Elsinod) handleAuthSubmit(
 		Name:      userName,
 		Email:     userEmail,
 		Sub:       "core://user/" + madeUpUserID.String(),
+		Units:     units,
 	})
 
 	http.Redirect(w, r, redirectURI.String(), http.StatusFound)
@@ -399,16 +526,19 @@ func (e *Elsinod) handleAuthSubmit(
 	return howdah.ErrSkipRender
 }
 
+func (e *Elsinod) getLatestKey() elsinodKey {
+	e.km.Lock()
+	defer e.km.Unlock()
+
+	return e.keys[0]
+}
+
 func (e *Elsinod) tokenEndpoint(
-	ctx context.Context, w http.ResponseWriter, r *http.Request,
+	_ context.Context, w http.ResponseWriter, r *http.Request,
 ) (*howdah.Page, error) {
 	err := r.ParseForm()
 	if err != nil {
 		return nil, badRequest("invalid form: %w", err)
-	}
-
-	for k := range r.Form {
-		println(k, r.FormValue(k))
 	}
 
 	grantType := r.FormValue("grant_type")
@@ -418,6 +548,8 @@ func (e *Elsinod) tokenEndpoint(
 	accessExpiresIn := 500
 	refreshExpiresIn := 604800
 	idExpiresIn := refreshExpiresIn
+
+	key := e.getLatestKey()
 
 	switch grantType {
 	case "client_credentials":
@@ -437,18 +569,18 @@ func (e *Elsinod) tokenEndpoint(
 				ID:        uuid.NewString(),
 				IssuedAt:  jwt.NewNumericDate(issued),
 				ExpiresAt: jwt.NewNumericDate(expires),
-				Issuer:    e.publicURL,
+				Issuer:    e.issuerURL,
 				Subject:   "core://application/" + clientID,
 			},
 			Type:     "Bearer",
 			Scope:    r.FormValue("scope"),
 			ClientID: clientID,
-
+			Org:      "core://org/" + e.org,
 			// TODO: Client unit memberships.
 
 		}
 
-		token, err := JWTToken(e.key, e.keyID, claims)
+		token, err := JWTToken(key.Key, key.JWK.ID, claims)
 		if err != nil {
 			return nil, fmt.Errorf("sign access token: %w", err)
 		}
@@ -492,24 +624,33 @@ func (e *Elsinod) tokenEndpoint(
 		expires := time.Now().Add(
 			time.Duration(accessExpiresIn) * time.Second)
 
+		// Naive, I know, but just for testing purposes.
+		given, family, _ := strings.Cut(spec.Name, " ")
+
 		claims := JWTClaims{
 			RegisteredClaims: jwt.RegisteredClaims{
 				ID:        uuid.NewString(),
 				IssuedAt:  jwt.NewNumericDate(issued),
 				ExpiresAt: jwt.NewNumericDate(expires),
-				Issuer:    e.publicURL,
+				Issuer:    e.issuerURL,
 				Subject:   spec.Sub,
 				Audience:  jwt.ClaimStrings{"elephant"},
 			},
 			Type:              "Bearer",
-			Scope:             r.FormValue("scope"),
+			AuthorizedParty:   clientID,
+			Scope:             spec.Scope,
 			ClientID:          spec.ClientID,
+			Org:               "core://org/" + e.org,
 			Units:             spec.Units,
-			PreferredUsername: spec.Name,
+			PreferredUsername: spec.Email,
+			Name:              spec.Name,
+			GivenName:         given,
+			FamilyName:        family,
 			Email:             spec.Email,
+			EmailVerified:     true,
 		}
 
-		token, err := JWTToken(e.key, e.keyID, claims)
+		token, err := JWTToken(key.Key, key.JWK.ID, claims)
 		if err != nil {
 			return nil, fmt.Errorf("sign access token: %w", err)
 		}
@@ -564,7 +705,7 @@ func (e *Elsinod) tokenEndpoint(
 			return nil, badRequest("validate refresh: %w", err)
 		}
 
-		token, err := JWTToken(e.key, e.keyID, claims)
+		token, err := JWTToken(key.Key, key.JWK.ID, claims)
 		if err != nil {
 			return nil, fmt.Errorf("sign access token: %w", err)
 		}
@@ -637,7 +778,9 @@ func (e *Elsinod) getRefreshToken(claims JWTClaims, expiresIn int) (string, erro
 	refreshClaims.Type = "refresh"
 	refreshClaims.ExpiresAt = jwt.NewNumericDate(expires)
 
-	refreshToken, err := JWTToken(e.key, e.keyID, refreshClaims)
+	key := e.getLatestKey()
+
+	refreshToken, err := JWTToken(key.Key, key.JWK.ID, refreshClaims)
 	if err != nil {
 		return "", fmt.Errorf("sign refresh token: %w", err)
 	}
@@ -654,7 +797,9 @@ func (e *Elsinod) getIDToken(claims JWTClaims, expiresIn int) (string, error) {
 	refreshClaims.Type = "id_token"
 	refreshClaims.ExpiresAt = jwt.NewNumericDate(expires)
 
-	refreshToken, err := JWTToken(e.key, e.keyID, refreshClaims)
+	key := e.getLatestKey()
+
+	refreshToken, err := JWTToken(key.Key, key.JWK.ID, refreshClaims)
 	if err != nil {
 		return "", fmt.Errorf("sign refresh token: %w", err)
 	}
@@ -674,11 +819,14 @@ type tokenResponse struct {
 
 func bigIntToBase64RawURL(i *big.Int, l uint) string {
 	var b []byte
+
 	if l != 0 {
 		b = make([]byte, l)
+
 		i.FillBytes(b)
 	} else {
 		b = i.Bytes()
 	}
+
 	return base64.RawURLEncoding.EncodeToString(b)
 }

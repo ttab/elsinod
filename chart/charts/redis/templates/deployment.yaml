@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: "redis:{{ .Chart.AppVersion }}-alpine"
+          command:
+            - redis-server
+            - --save
+            - "20"
+            - "1"
+            - --loglevel
+            - warning
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: api
+              containerPort: 6379
+              protocol: TCP
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+
+      volumes:
+        - name: redis-data
+          emptyDir:
+            sizeLimit: 2Gi

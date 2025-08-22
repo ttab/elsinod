@@ -1,0 +1,24 @@
+globals:
+  s3:
+    override: true
+
+withAffinities: false
+
+logLevel: debug
+replicas: 1
+rolloutStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 100%
+    maxUnavailable: 0%
+
+vaultSecrets:
+  create: false
+
+serviceAccount:
+  create: false
+
+networkpolicy:
+  create: false
+
+mountCACert: true

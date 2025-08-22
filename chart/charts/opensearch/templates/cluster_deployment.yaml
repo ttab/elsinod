@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opensearch
+  labels:
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: opensearch
+  template:
+    metadata:
+      labels:
+        app: opensearch
+    spec:
+      containers:
+        - name: opensearch
+          image: "ghcr.io/ttab/opensearch-icu:v{{ .Chart.AppVersion }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 9200
+              protocol: TCP
+          env:
+            - name: cluster.name
+              value: opensearch-cluster
+            - name: node.name
+              value: opensearch-node1
+            - name: discovery.type
+              value: single-node
+            - name: bootstrap.memory_lock
+              value: "true" # Disable JVM heap memory swapping
+            - name: OPENSEARCH_JAVA_OPTS
+              value: "-Xms512m -Xmx512m" # Set min and max JVM heap sizes to at least 50% of system RAM
+            - name: DISABLE_INSTALL_DEMO_CONFIG
+              value: "true" # Prevents execution of bundled demo script which
+                            # installs demo certificates and security
+                            # configurations to OpenSearch
+            - name: DISABLE_SECURITY_PLUGIN
+              value: "true"
+          volumeMounts:
+            - name: opensearch-data
+              mountPath: /usr/share/opensearch/data
+
+      volumes:
+        - name: opensearch-data
+          emptyDir:
+            sizeLimit: 2Gi

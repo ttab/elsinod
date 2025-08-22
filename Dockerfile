@@ -16,7 +16,7 @@ FROM alpine:3.22
 COPY --from=build /build/elsinod /usr/local/bin/elsinod
 
 RUN apk upgrade --no-cache \
-    && apk add tzdata
+    && apk add tzdata curl
 
 # API server
 EXPOSE 1080

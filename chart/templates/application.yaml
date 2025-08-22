@@ -1,0 +1,17 @@
+{{ include "goApplication" . }}
+
+{{- define "configmap" -}}
+PUBLIC_URL: https://elsinod.{{.Values.globals.baseDomain}}
+{{- end -}}
+
+{{- define "demoSecrets" -}}
+CONN_STRING: {{ printf "postgres://postgres:%s@postgres/postgres" .Values.globals.dbPassword | b64enc}}
+CLIENT_SECRET: {{ printf "%s" .Values.globals.clientPassword | b64enc }}
+DEMO_PASSWORD: {{ printf "%s" .Values.globals.loginPassword | b64enc }}
+{{- with .Values.globals.s3 }}{{ if .override }}
+S3_BUCKETS: {{ "elephant-archive,elephant-assets" | b64enc }}
+S3_ENDPOINT: {{.endpoint | b64enc}}
+S3_ACCESS_KEY_ID: {{.accessKey | b64enc}}
+S3_ACCESS_KEY_SECRET: {{.accessKeySecret | b64enc}}
+{{- end }}{{ end }}
+{{- end -}}

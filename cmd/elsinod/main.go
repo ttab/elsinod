@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"fmt"
@@ -8,7 +9,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/joho/godotenv"
 	"github.com/ttab/elephantine"
 	"github.com/ttab/elsinod"
@@ -48,12 +51,6 @@ func main() {
 				Value:   "http://localhost:1080",
 			},
 			&cli.StringFlag{
-				Name:    "internal-url",
-				Usage:   "Internally visible base URL",
-				EnvVars: []string{"INTERNAL_URL"},
-				Value:   "http://localhost:1080",
-			},
-			&cli.StringFlag{
 				Name:    "profile-addr",
 				Usage:   "Profile listen address",
 				EnvVars: []string{"PROFILE_ADDR"},
@@ -61,7 +58,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:    "db",
-				Value:   "postgres://postgres:pass@elephant-database/postgres",
+				Value:   "postgres://postgres:pass@database/postgres",
 				EnvVars: []string{"CONN_STRING"},
 			},
 			&cli.StringFlag{
@@ -71,10 +68,36 @@ func main() {
 				Required: true,
 			},
 			&cli.StringFlag{
+				Name:    "organisation",
+				Usage:   "The organisation used for the install",
+				EnvVars: []string{"ORGANISATION"},
+				Value:   "demo",
+			},
+			&cli.StringFlag{
 				Name:     "demo-password",
 				Usage:    "Demo password for simulating login",
 				EnvVars:  []string{"DEMO_PASSWORD"},
 				Required: true,
+			},
+			&cli.StringFlag{
+				Name:    "s3-endpoint",
+				Usage:   "Override the S3 endpoint for use with Minio",
+				EnvVars: []string{"S3_ENDPOINT"},
+			},
+			&cli.StringFlag{
+				Name:    "s3-key-id",
+				Usage:   "Access key ID to use as a static credential with Minio",
+				EnvVars: []string{"S3_ACCESS_KEY_ID"},
+			},
+			&cli.StringFlag{
+				Name:    "s3-key-secret",
+				Usage:   "Access key secret to use as a static credential with Minio",
+				EnvVars: []string{"S3_ACCESS_KEY_SECRET"},
+			},
+			&cli.StringSliceFlag{
+				Name:    "bucket",
+				Usage:   "Buckets to create if they are missing",
+				EnvVars: []string{"S3_BUCKETS"},
 			},
 		},
 	}
@@ -93,26 +116,66 @@ func main() {
 	}
 }
 
-func runAction(c *cli.Context) error {
+func runAction(c *cli.Context) (outErr error) {
 	ctx := c.Context
 
 	var (
 		addr         = c.String("addr")
 		profileAddr  = c.String("profile-addr")
 		publicURL    = c.String("public-url")
-		internalURL  = c.String("internal-url")
+		org          = c.String("organisation")
 		clientSecret = c.String("client-secret")
 		demoPassword = c.String("demo-password")
 		logLevel     = c.String("log-level")
+		db           = c.String("db")
+		buckets      = c.StringSlice("bucket")
 	)
 
 	logger := elephantine.SetUpLogger(logLevel, os.Stderr)
 
+	s3Client, err := internal.S3Client(ctx, internal.S3Options{
+		Endpoint:        c.String("s3-endpoint"),
+		AccessKeyID:     c.String("s3-key-id"),
+		AccessKeySecret: c.String("s3-key-secret"),
+	})
+	if err != nil {
+		return fmt.Errorf("create S3 client: %w", err)
+	}
+
+	err = internal.EnsureBuckets(ctx, s3Client, buckets)
+	if err != nil {
+		return fmt.Errorf("ensure buckets: %w", err)
+	}
+
+	dbSetup, err := internal.NewDBSetup(db,
+		mustSubFs(elsinod.DBMigrationsFS, "migrations"))
+	if err != nil {
+		return fmt.Errorf("create DB setup helper: %w", err)
+	}
+
+	err = dbSetup.EnsureDatabases(ctx)
+	if err != nil {
+		return fmt.Errorf("initialise databases: %w", err)
+	}
+
+	dbConn, err := pgx.Connect(ctx, dbSetup.ConnString("elsinod"))
+	if err != nil {
+		return fmt.Errorf(
+			"open application database connection to: %w", err)
+	}
+
+	defer elephantine.Close("db connection", closerFunc(func() error {
+		ctx, cancel := context.WithTimeout(context.Background(),
+			5*time.Second)
+		defer cancel()
+
+		return dbConn.Close(ctx)
+	}), &outErr)
+
 	server := elephantine.NewAPIServer(logger, addr, profileAddr)
 
-	els, err := internal.NewElsinod(ctx,
-		internalURL, publicURL,
-		clientSecret, demoPassword)
+	els, err := internal.NewElsinod(ctx, dbConn,
+		publicURL, clientSecret, demoPassword, org)
 	if err != nil {
 		return fmt.Errorf("create elsinod application: %w", err)
 	}
@@ -151,4 +214,10 @@ func mustSubFs(f embed.FS, directory string) fs.FS {
 	}
 
 	return s
+}
+
+type closerFunc func() error
+
+func (cf closerFunc) Close() error {
+	return cf()
 }

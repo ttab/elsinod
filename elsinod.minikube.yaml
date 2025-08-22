@@ -1,0 +1,10 @@
+globals:
+  albIngress: false
+  s3:
+    override: true
+
+withAffinities: false
+
+networkpolicy:
+  create: false
+

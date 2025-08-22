@@ -1,0 +1,22 @@
+globals:
+  albIngress: false
+
+replicas: 1
+rolloutStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 100%
+    maxUnavailable: 0%
+  
+faroUrl: http://signals/collect
+pyroscopeUrl: http://alloy:9999
+
+withAffinities: false
+
+vaultSecrets:
+  create: false
+
+networkpolicy:
+  create: false
+
+mountCACert: true

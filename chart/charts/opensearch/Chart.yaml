@@ -1,0 +1,6 @@
+apiVersion: v2
+name: opensearch
+description: OpenSearch with ICU and a dashboard for debugging.
+type: application
+version: 0.1.0
+appVersion: "2.19.3-1"

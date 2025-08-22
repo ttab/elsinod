@@ -1,0 +1,6 @@
+dependencies:
+- name: elib
+  repository: oci://ghcr.io/ttab/helm-elib
+  version: 0.1.2
+digest: sha256:0b7b7bb4cffe589370fa92c8fbec2b71ba035c47e79d9c44e97f8eda8851677b
+generated: "2025-08-22T16:36:56.92381029+02:00"
