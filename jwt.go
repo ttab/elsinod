@@ -1,4 +1,4 @@
-package internal
+package elsinod
 
 import (
 	"crypto/ecdsa"
@@ -77,4 +77,32 @@ func JWTToken(key *ecdsa.PrivateKey, keyID string, claims jwt.Claims) (string, e
 	}
 
 	return ss, nil
+}
+
+type JWK struct {
+	ID    string `json:"kid"`
+	Type  string `json:"kty"`
+	Algo  string `json:"alg"`
+	Use   string `json:"use"`
+	Curve string `json:"crv"`
+	X     string `json:"x"`
+	Y     string `json:"y"`
+}
+
+func JWKFromEcdsa(id string, key *ecdsa.PrivateKey) JWK {
+	l := uint(key.Curve.Params().BitSize / 8) //nolint: gosec
+
+	if key.Curve.Params().BitSize%8 != 0 {
+		l++
+	}
+
+	return JWK{
+		ID:    id,
+		Type:  "EC",
+		Algo:  "ES384",
+		Use:   "sig",
+		Curve: "P-384",
+		X:     bigIntToBase64RawURL(key.X, l),
+		Y:     bigIntToBase64RawURL(key.Y, l),
+	}
 }

@@ -1,8 +1,7 @@
-package internal
+package elsinod
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -13,15 +12,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/ttab/elephantine"
-	"github.com/ttab/elsinod/howdah"
-	"github.com/ttab/elsinod/postgres"
+	"github.com/ttab/howdah"
 	"github.com/viccon/sturdyc"
 )
 
@@ -30,9 +26,9 @@ func init() { //nolint: gochecknoinits
 	jwt.MarshalSingleStringAsArray = true
 }
 
-func NewElsinod(
+func New(
 	ctx context.Context,
-	db *pgx.Conn,
+	keystore KeyStore,
 	publicURL string,
 	clientSecret string,
 	demoPassword string,
@@ -78,6 +74,7 @@ func NewElsinod(
 	)
 
 	e := Elsinod{
+		keystore:     keystore,
 		issuerURL:    issuerURL,
 		publicURL:    publicURL,
 		clientSecret: clientSecret,
@@ -85,11 +82,6 @@ func NewElsinod(
 		oidc:         conf,
 		codes:        codes,
 		org:          organisation,
-	}
-
-	err = e.ensureSigningKeys(ctx, db)
-	if err != nil {
-		return nil, fmt.Errorf("ensure signing keys: %w", err)
 	}
 
 	e.authParser = elephantine.NewJWTAuthInfoParser(ctx, e.keyFunc, elephantine.JWTAuthInfoParserOptions{
@@ -101,8 +93,7 @@ func NewElsinod(
 }
 
 type Elsinod struct {
-	km   sync.Mutex
-	keys []elsinodKey
+	keystore KeyStore
 
 	issuerURL    string
 	publicURL    string
@@ -169,124 +160,35 @@ func (e *Elsinod) oidcConfig(
 }
 
 func (e *Elsinod) keyFunc(t *jwt.Token) (any, error) {
-	for _, k := range e.keys {
-		if k.JWK.ID == t.Header["kid"] {
-			return k.Key, nil
-		}
+	keyID, ok := t.Header["kid"].(string)
+	if !ok {
+		return nil, errors.New("invalid key ID")
 	}
 
-	return nil, errors.New("unknown signing key")
-}
-
-type StoredSigningKey struct {
-	Created time.Time
-	PEM     string
-}
-
-type elsinodKey struct {
-	Key *ecdsa.PrivateKey
-	JWK jwk
-}
-
-func (e *Elsinod) ensureSigningKeys(
-	ctx context.Context, db *pgx.Conn,
-) (outErr error) {
-	e.km.Lock()
-	defer e.km.Unlock()
-
-	var known []string
-
-	for _, k := range e.keys {
-		known = append(known, k.JWK.ID)
-	}
-
-	q := postgres.New(db)
-
-	keyList, err := q.GetSigningKeys(ctx, known)
+	key, err := e.keystore.GetKey(context.Background(), keyID)
 	if err != nil {
-		return fmt.Errorf("load signing keys: %w", err)
+		return nil, err //nolint: wrapcheck
 	}
 
-	for _, row := range keyList {
-		var stored StoredSigningKey
-
-		err = json.Unmarshal(keyList[0].Data, &stored)
-		if err != nil {
-			return fmt.Errorf("unmarshal stored key: %w", err)
-		}
-
-		key, err := DecodePrivateKey(stored.PEM)
-		if err != nil {
-			return fmt.Errorf("decode key %q: %w", row.ID, err)
-		}
-
-		e.keys = append(e.keys, elsinodKey{
-			Key: key,
-			JWK: jwkFromEcdsa(row.ID, key),
-		})
-	}
-
-	if len(e.keys) > 0 {
-		return nil
-	}
-
-	key, err := NewSigningKey()
-	if err != nil {
-		return fmt.Errorf("create new signing key: %w", err)
-	}
-
-	pemEnc, err := EncodePrivateKey(key)
-	if err != nil {
-		return fmt.Errorf("encode new key: %w", err)
-	}
-
-	data, err := json.Marshal(StoredSigningKey{
-		Created: time.Now(),
-		PEM:     pemEnc,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal new key for storage: %w", err)
-	}
-
-	jwk := jwkFromEcdsa(uuid.NewString(), key)
-
-	err = q.AddSigningKey(ctx, postgres.AddSigningKeyParams{
-		ID:   jwk.ID,
-		Data: data,
-	})
-	if err != nil {
-		return fmt.Errorf("save new signing key: %w", err)
-	}
-
-	e.keys = append(e.keys, elsinodKey{
-		Key: key,
-		JWK: jwk,
-	})
-
-	return nil
+	return key.PrivateKey.PublicKey, nil
 }
 
 type jwks struct {
-	Keys []jwk `json:"keys"`
-}
-
-type jwk struct {
-	ID    string `json:"kid"`
-	Type  string `json:"kty"`
-	Algo  string `json:"alg"`
-	Use   string `json:"use"`
-	Curve string `json:"crv"`
-	X     string `json:"x"`
-	Y     string `json:"y"`
+	Keys []JWK `json:"keys"`
 }
 
 func (e *Elsinod) jwks(
-	_ context.Context, w http.ResponseWriter, _ *http.Request,
+	ctx context.Context, w http.ResponseWriter, _ *http.Request,
 ) (*howdah.Page, error) {
-	keys := make([]jwk, len(e.keys))
+	stored, err := e.keystore.GetKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get signing keys: %w", err)
+	}
 
-	for i := range e.keys {
-		keys[i] = e.keys[i].JWK
+	keys := make([]JWK, len(stored))
+
+	for i := range stored {
+		keys[i] = stored[i].JWK
 	}
 
 	data, err := json.MarshalIndent(jwks{
@@ -305,24 +207,6 @@ func (e *Elsinod) jwks(
 	}
 
 	return nil, howdah.ErrSkipRender
-}
-
-func jwkFromEcdsa(id string, key *ecdsa.PrivateKey) jwk {
-	l := uint(key.Curve.Params().BitSize / 8) //nolint: gosec
-
-	if key.Curve.Params().BitSize%8 != 0 {
-		l++
-	}
-
-	return jwk{
-		ID:    id,
-		Type:  "EC",
-		Algo:  "ES384",
-		Use:   "sig",
-		Curve: "P-384",
-		X:     bigIntToBase64RawURL(key.X, l),
-		Y:     bigIntToBase64RawURL(key.Y, l),
-	}
 }
 
 func badRequest(format string, a ...any) error {
@@ -526,15 +410,8 @@ func (e *Elsinod) handleAuthSubmit(
 	return howdah.ErrSkipRender
 }
 
-func (e *Elsinod) getLatestKey() elsinodKey {
-	e.km.Lock()
-	defer e.km.Unlock()
-
-	return e.keys[0]
-}
-
 func (e *Elsinod) tokenEndpoint(
-	_ context.Context, w http.ResponseWriter, r *http.Request,
+	ctx context.Context, w http.ResponseWriter, r *http.Request,
 ) (*howdah.Page, error) {
 	err := r.ParseForm()
 	if err != nil {
@@ -549,7 +426,10 @@ func (e *Elsinod) tokenEndpoint(
 	refreshExpiresIn := 604800
 	idExpiresIn := refreshExpiresIn
 
-	key := e.getLatestKey()
+	key, err := e.keystore.GetCurrentSigningKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("no signing keys available: %w", err)
+	}
 
 	switch grantType {
 	case "client_credentials":
@@ -580,7 +460,7 @@ func (e *Elsinod) tokenEndpoint(
 
 		}
 
-		token, err := JWTToken(key.Key, key.JWK.ID, claims)
+		token, err := JWTToken(key.PrivateKey, key.JWK.ID, claims)
 		if err != nil {
 			return nil, fmt.Errorf("sign access token: %w", err)
 		}
@@ -650,17 +530,17 @@ func (e *Elsinod) tokenEndpoint(
 			EmailVerified:     true,
 		}
 
-		token, err := JWTToken(key.Key, key.JWK.ID, claims)
+		token, err := JWTToken(key.PrivateKey, key.JWK.ID, claims)
 		if err != nil {
 			return nil, fmt.Errorf("sign access token: %w", err)
 		}
 
-		refreshToken, err := e.getRefreshToken(claims, refreshExpiresIn)
+		refreshToken, err := e.getRefreshToken(key, claims, refreshExpiresIn)
 		if err != nil {
 			return nil, err
 		}
 
-		idToken, err := e.getIDToken(claims, idExpiresIn)
+		idToken, err := e.getIDToken(key, claims, idExpiresIn)
 		if err != nil {
 			return nil, err
 		}
@@ -705,12 +585,12 @@ func (e *Elsinod) tokenEndpoint(
 			return nil, badRequest("validate refresh: %w", err)
 		}
 
-		token, err := JWTToken(key.Key, key.JWK.ID, claims)
+		token, err := JWTToken(key.PrivateKey, key.JWK.ID, claims)
 		if err != nil {
 			return nil, fmt.Errorf("sign access token: %w", err)
 		}
 
-		refreshToken, err := e.getRefreshToken(claims, refreshExpiresIn)
+		refreshToken, err := e.getRefreshToken(key, claims, refreshExpiresIn)
 		if err != nil {
 			return nil, err
 		}
@@ -769,7 +649,7 @@ func (e *Elsinod) accessTokenClaimsFromRefresh(
 	return claims, nil
 }
 
-func (e *Elsinod) getRefreshToken(claims JWTClaims, expiresIn int) (string, error) {
+func (e *Elsinod) getRefreshToken(key StoreKey, claims JWTClaims, expiresIn int) (string, error) {
 	expires := time.Now().Add(
 		time.Duration(expiresIn) * time.Second)
 
@@ -778,9 +658,7 @@ func (e *Elsinod) getRefreshToken(claims JWTClaims, expiresIn int) (string, erro
 	refreshClaims.Type = "refresh"
 	refreshClaims.ExpiresAt = jwt.NewNumericDate(expires)
 
-	key := e.getLatestKey()
-
-	refreshToken, err := JWTToken(key.Key, key.JWK.ID, refreshClaims)
+	refreshToken, err := JWTToken(key.PrivateKey, key.JWK.ID, refreshClaims)
 	if err != nil {
 		return "", fmt.Errorf("sign refresh token: %w", err)
 	}
@@ -788,7 +666,7 @@ func (e *Elsinod) getRefreshToken(claims JWTClaims, expiresIn int) (string, erro
 	return refreshToken, nil
 }
 
-func (e *Elsinod) getIDToken(claims JWTClaims, expiresIn int) (string, error) {
+func (e *Elsinod) getIDToken(key StoreKey, claims JWTClaims, expiresIn int) (string, error) {
 	expires := time.Now().Add(
 		time.Duration(expiresIn) * time.Second)
 
@@ -797,9 +675,7 @@ func (e *Elsinod) getIDToken(claims JWTClaims, expiresIn int) (string, error) {
 	refreshClaims.Type = "id_token"
 	refreshClaims.ExpiresAt = jwt.NewNumericDate(expires)
 
-	key := e.getLatestKey()
-
-	refreshToken, err := JWTToken(key.Key, key.JWK.ID, refreshClaims)
+	refreshToken, err := JWTToken(key.PrivateKey, key.JWK.ID, refreshClaims)
 	if err != nil {
 		return "", fmt.Errorf("sign refresh token: %w", err)
 	}
