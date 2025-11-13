@@ -24,4 +24,4 @@ EXPOSE 1080
 # Debug/profiling server
 EXPOSE 1081
 
-ENTRYPOINT ["elsinod", "run"]
+ENTRYPOINT ["elsinod", "mock"]

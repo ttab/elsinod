@@ -120,12 +120,62 @@ func main() {
 		},
 	}
 
+	runOIDCMockCmd := cli.Command{
+		Name:        "mock",
+		Description: "Runs the dummy oidc provider",
+		Action:      OIDCMockAction,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "log-level",
+				EnvVars: []string{"LOG_LEVEL"},
+				Value:   "info",
+			},
+			&cli.StringFlag{
+				Name:    "addr",
+				Usage:   "Listen address",
+				EnvVars: []string{"ADDR"},
+				Value:   ":1080",
+			},
+			&cli.StringFlag{
+				Name:    "profile-addr",
+				Usage:   "Profile listen address",
+				EnvVars: []string{"PROFILE_ADDR"},
+				Value:   ":1081",
+			},
+			&cli.StringFlag{
+				Name:    "public-url",
+				Usage:   "Publicly visible base URL",
+				EnvVars: []string{"PUBLIC_URL"},
+				Value:   "http://localhost:1080",
+			},
+			&cli.StringFlag{
+				Name:     "client-secret",
+				Usage:    "Client secret shared by all clients",
+				EnvVars:  []string{"CLIENT_SECRET"},
+				Required: true,
+			},
+			&cli.StringFlag{
+				Name:    "organisation",
+				Usage:   "The organisation used for the install",
+				EnvVars: []string{"ORGANISATION"},
+				Value:   "demo",
+			},
+			&cli.StringFlag{
+				Name:     "demo-password",
+				Usage:    "Demo password for simulating login",
+				EnvVars:  []string{"DEMO_PASSWORD"},
+				Required: true,
+			},
+		},
+	}
+
 	app := cli.App{
 		Name:  "elsinod",
 		Usage: "Elephant demo helper",
 		Commands: []*cli.Command{
 			&runCmd,
 			&runDeploy,
+			&runOIDCMockCmd,
 		},
 	}
 
@@ -426,4 +476,46 @@ type closerFunc func() error
 
 func (cf closerFunc) Close() error {
 	return cf()
+}
+
+func OIDCMockAction(c *cli.Context) error {
+	ctx := c.Context
+
+	var (
+		logLevel     = c.String("log-level")
+		addr         = c.String("addr")
+		profileAddr  = c.String("profile-addr")
+		publicURL    = c.String("public-url")
+		org          = c.String("organisation")
+		clientSecret = c.String("client-secret")
+		demoPassword = c.String("demo-password")
+	)
+
+	logger := elephantine.SetUpLogger(logLevel, os.Stderr)
+
+	signingKey, err := elsinod.NewSigningKey()
+	if err != nil {
+		return fmt.Errorf("create new signing key: %w", err)
+	}
+
+	keyStore := elsinod.NewStaticKeyStore("k1", signingKey)
+
+	els, err := elsinod.New(ctx, keyStore, publicURL, clientSecret, demoPassword, org)
+	if err != nil {
+		return fmt.Errorf("create new elsinod: %w", err)
+	}
+
+	server := elephantine.NewAPIServer(logger, addr, profileAddr)
+
+	elsinodMux := server.Mux
+	pageMux := howdah.NewPageMux(nil, elsinodMux)
+
+	els.RegisterRoutes(pageMux)
+
+	err = server.ListenAndServe(ctx)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("serve: %w", err)
+	}
+
+	return nil
 }

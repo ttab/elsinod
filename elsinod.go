@@ -41,32 +41,34 @@ func New(
 
 	issuerURL := baseURL.String()
 
-	conf := elephantine.OpenIDConnectConfig{
-		Issuer:                issuerURL,
-		UserinfoEndpoint:      baseURL.JoinPath("user-info").String(),
-		TokenEndpoint:         baseURL.JoinPath("token").String(),
-		AuthorizationEndpoint: baseURL.JoinPath("protocol", "openid-connect", "auth").String(),
-		JwksURI:               baseURL.JoinPath(".well-known", "jwks.json").String(),
-		GrantTypesSupported: []string{
-			"authorization_code",
-			"refresh_token",
-			"client_credentials",
-			"urn:ietf:params:oauth:grant-type:token-exchange",
-		},
-		ResponseTypesSupported: []string{
-			"code",
-			"token",
-			"id_token",
-		},
-		IDTokenSigningAlgValuesSupported: []string{
-			"ES384",
-		},
-		TokenEndpointAuthMethodsSupported: []string{
-			"client_secret_post",
-		},
-		TokenEndpointAuthSigningAlgValuesSupported: []string{
-			"ES384",
-		},
+	conf := func(hostURL *url.URL) elephantine.OpenIDConnectConfig {
+		return elephantine.OpenIDConnectConfig{
+			Issuer:                issuerURL,
+			UserinfoEndpoint:      hostURL.JoinPath("user-info").String(),
+			TokenEndpoint:         hostURL.JoinPath("token").String(),
+			AuthorizationEndpoint: hostURL.JoinPath("protocol", "openid-connect", "auth").String(),
+			JwksURI:               hostURL.JoinPath(".well-known", "jwks.json").String(),
+			GrantTypesSupported: []string{
+				"authorization_code",
+				"refresh_token",
+				"client_credentials",
+				"urn:ietf:params:oauth:grant-type:token-exchange",
+			},
+			ResponseTypesSupported: []string{
+				"code",
+				"token",
+				"id_token",
+			},
+			IDTokenSigningAlgValuesSupported: []string{
+				"ES384",
+			},
+			TokenEndpointAuthMethodsSupported: []string{
+				"client_secret_post",
+			},
+			TokenEndpointAuthSigningAlgValuesSupported: []string{
+				"ES384",
+			},
+		}
 	}
 
 	codes := sturdyc.New[issuedCode](1000, 1, 12*time.Second, 20,
@@ -99,7 +101,7 @@ type Elsinod struct {
 	publicURL    string
 	clientSecret string
 	demoPassword string
-	oidc         elephantine.OpenIDConnectConfig
+	oidc         func(hostURL *url.URL) elephantine.OpenIDConnectConfig
 	codes        *sturdyc.Client[issuedCode]
 	authParser   elephantine.AuthInfoParser
 	org          string
@@ -141,9 +143,13 @@ func (e *Elsinod) RegisterRoutes(mux *howdah.PageMux) {
 }
 
 func (e *Elsinod) oidcConfig(
-	_ context.Context, w http.ResponseWriter, _ *http.Request,
+	_ context.Context, w http.ResponseWriter, r *http.Request,
 ) (*howdah.Page, error) {
-	data, err := json.MarshalIndent(e.oidc, "", "  ")
+	hostURL := getHostURLFromReq(r)
+
+	oidc := e.oidc(hostURL)
+
+	data, err := json.MarshalIndent(oidc, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal config: %w", err)
 	}
@@ -157,6 +163,18 @@ func (e *Elsinod) oidcConfig(
 	}
 
 	return nil, howdah.ErrSkipRender
+}
+
+func getHostURLFromReq(r *http.Request) *url.URL {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+
+	return &url.URL{
+		Scheme: scheme,
+		Host:   r.Host,
+	}
 }
 
 func (e *Elsinod) keyFunc(t *jwt.Token) (any, error) {
